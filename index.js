@@ -1,226 +1,183 @@
 const TelegramBot = require("node-telegram-bot-api");
+const express = require("express");
 
-const token = process.env.BOT_TOKEN;
-const bot = new TelegramBot(token, { polling: true });
-
-// 🔐 Your Admin ID
+// ================= CONFIG =================
+const TOKEN = process.env.BOT_TOKEN;
 const ADMIN_ID = 8155108761;
 
-// 📦 Slot storage
-let slots = {
-  slot1: { status: "available", user: null },
-  slot2: { status: "available", user: null },
-  slot3: { status: "available", user: null }
-};
+// ================= INIT =================
+if (!TOKEN) {
+  console.error("BOT_TOKEN missing");
+  process.exit(1);
+}
 
-// 👤 User state tracking
-let userState = {};
+const bot = new TelegramBot(TOKEN, { polling: true });
+const app = express();
 
-// --- START ---
+// Keep Render alive
+app.get("/", (req, res) => {
+  res.send("Bot is running ✅");
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log("Server running on port", PORT));
+
+// ================= DATA STORAGE =================
+// In-memory (resets on restart)
+let bookings = {}; 
+// structure:
+// bookings[userId] = { slot, status, expiresAt }
+
+// ================= START =================
 bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
 
-  bot.sendMessage(chatId,
-`👋 Welcome to PNGTOOLZRENT
-
-Choose an option:`, {
+  const options = {
     reply_markup: {
-      keyboard: [
-        ["📊 View Slots"]
-      ],
-      resize_keyboard: true
+      inline_keyboard: [
+        [{ text: "📊 View Slots", callback_data: "view_slots" }]
+      ]
     }
-  });
+  };
+
+  bot.sendMessage(chatId, "Welcome to PNGToolzRent Bot 🚀\nSelect an option below:", options);
 });
 
-// --- MESSAGE HANDLER ---
-bot.on("message", (msg) => {
-  const chatId = msg.chat.id;
-  const text = msg.text;
+// ================= SLOT MENU =================
+function showSlots(chatId) {
+  const options = {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: "Slot 1", callback_data: "slot1" }],
+        [{ text: "Slot 2", callback_data: "slot2" }],
+        [{ text: "Slot 3", callback_data: "slot3" }]
+      ]
+    }
+  };
 
-  if (text === "📊 View Slots") {
-    bot.sendMessage(chatId,
-`📊 Choose a slot:
-
-🟢 slot1
-🟢 slot2
-🟢 slot3`, {
-      reply_markup: {
-        keyboard: [
-          ["slot1"],
-          ["slot2"],
-          ["slot3"]
-        ],
-        resize_keyboard: true
-      }
-    });
-  }
-
-  if (["slot1", "slot2", "slot3"].includes(text)) {
-    handleSlot(chatId, text);
-  }
-});
-
-// --- SLOT HANDLER ---
-function handleSlot(chatId, slotName) {
-  if (slots[slotName].status === "available") {
-
-    slots[slotName].status = "pending";
-    slots[slotName].user = chatId;
-
-    // Track user state
-    userState[chatId] = {
-      step: "awaiting_receipt",
-      slot: slotName
-    };
-
-    bot.sendMessage(chatId,
-`💳 Slot reserved: ${slotName}
-
-📸 Please send your payment receipt as a photo in this chat.
-
-Waiting for admin approval...`);
-
-    bot.sendMessage(ADMIN_ID,
-`📥 New Booking Request
-
-Slot: ${slotName}
-User ID: ${chatId}`);
-
-  } else {
-    bot.sendMessage(chatId, "❌ Slot not available");
-  }
+  bot.sendMessage(chatId, "Select an available slot:", options);
 }
 
-// --- RECEIPT HANDLER ---
-bot.on("photo", (msg) => {
-  const chatId = msg.chat.id;
+// ================= CALLBACK HANDLER =================
+bot.on("callback_query", async (query) => {
+  const chatId = query.message.chat.id;
+  const userId = query.from.id;
+  const data = query.data;
 
-  // Ignore admin
-  if (chatId === ADMIN_ID) return;
-
-  // Validate user state
-  if (!userState[chatId] || userState[chatId].step !== "awaiting_receipt") {
-    bot.sendMessage(chatId, "⚠️ Please select a slot first.");
-    return;
+  if (data === "view_slots") {
+    showSlots(chatId);
   }
 
-  const userSlot = userState[chatId].slot;
+  if (data.startsWith("slot")) {
+    const slot = data;
+
+    bookings[userId] = {
+      slot: slot,
+      status: "pending",
+      expiresAt: null
+    };
+
+    bot.sendMessage(
+      chatId,
+      `💳 Send your payment receipt now.\n\nAfter sending, wait for admin approval.`
+    );
+
+    // Notify admin
+    bot.sendMessage(
+      ADMIN_ID,
+      `📥 New booking request\n\nSlot: ${slot}\nUser ID: ${userId}\n\nPlease review receipt.`
+    );
+  }
+
+  // Admin actions
+  if (data.startsWith("approve_") && userId === ADMIN_ID) {
+    const targetUser = data.split("_")[1];
+
+    if (bookings[targetUser]) {
+      const durationHours = 6;
+      const expiresAt = Date.now() + durationHours * 60 * 60 * 1000;
+
+      bookings[targetUser].status = "active";
+      bookings[targetUser].expiresAt = expiresAt;
+
+      bot.sendMessage(
+        targetUser,
+        `✅ Your slot is approved!\n\nAccess details:\n(You can now use the service)\n\n⏳ Duration: 6 hours`
+      );
+
+      bot.sendMessage(ADMIN_ID, `Approved user ${targetUser}`);
+    }
+  }
+
+  if (data.startsWith("reject_") && userId === ADMIN_ID) {
+    const targetUser = data.split("_")[1];
+
+    if (bookings[targetUser]) {
+      bookings[targetUser].status = "rejected";
+
+      bot.sendMessage(targetUser, "❌ Your booking was rejected.");
+      bot.sendMessage(ADMIN_ID, `Rejected user ${targetUser}`);
+    }
+  }
+});
+
+// ================= RECEIPT HANDLER =================
+bot.on("message", async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+
+  // Ignore commands
+  if (msg.text && msg.text.startsWith("/")) return;
+
+  if (!bookings[userId]) return;
+
+  if (bookings[userId].status !== "pending") return;
 
   // Forward receipt to admin
-  bot.forwardMessage(ADMIN_ID, chatId, msg.message_id);
-
-  bot.sendMessage(ADMIN_ID,
-`Approve payment for:
-Slot: ${userSlot}
-User: ${chatId}`, {
+  const options = {
     reply_markup: {
       inline_keyboard: [
         [
-          { text: "✅ Approve", callback_data: `approve_${chatId}` },
-          { text: "❌ Reject", callback_data: `reject_${chatId}` }
+          { text: "✅ Approve", callback_data: `approve_${userId}` },
+          { text: "❌ Reject", callback_data: `reject_${userId}` }
         ]
       ]
     }
-  });
+  };
 
-  bot.sendMessage(chatId, "📨 Receipt received. Waiting for admin approval.");
-});
+  if (msg.photo) {
+    const photo = msg.photo[msg.photo.length - 1].file_id;
 
-// --- ADMIN APPROVAL HANDLER ---
-bot.on("callback_query", (query) => {
-  const data = query.data;
-
-  // Only admin can approve/reject
-  if (query.message.chat.id !== ADMIN_ID) return;
-
-  if (data.startsWith("approve_")) {
-    const userId = data.split("_")[1];
-
-    if (userState[userId]) {
-      delete userState[userId];
-    }
-
-    bot.sendMessage(userId,
-`✅ Payment Approved!
-
-Login Details:
-Username: demo_user
-Password: demo_pass
-
-⏳ Your session has started.`);
-  }
-
-  if (data.startsWith("reject_")) {
-    const userId = data.split("_")[1];
-
-    if (userState[userId]) {
-      delete userState[userId];
-    }
-
-    bot.sendMessage(userId,
-`❌ Payment rejected. Please try again.`);
+    bot.sendPhoto(ADMIN_ID, photo, {
+      caption: `Receipt from user ${userId}`,
+      ...options
+    });
+  } else if (msg.document) {
+    bot.sendDocument(ADMIN_ID, msg.document.file_id, {
+      caption: `Receipt from user ${userId}`,
+      ...options
+    });
+  } else {
+    bot.sendMessage(chatId, "Please send a screenshot or document of your payment.");
   }
 });
-  bot.sendMessage(ADMIN_ID, `Approve payment for ${userSlot} (User: ${chatId})`, {
-    reply_markup: {
-      inline_keyboard: [
-        [
-          { text: "✅ Approve", callback_data: `approve_${chatId}` },
-          { text: "❌ Reject", callback_data: `reject_${chatId}` }
-        ]
-      ]
+
+// ================= TIMER CHECK =================
+// Notify admin when time expires
+setInterval(() => {
+  const now = Date.now();
+
+  for (let userId in bookings) {
+    const b = bookings[userId];
+
+    if (b.status === "active" && b.expiresAt && now > b.expiresAt) {
+      b.status = "expired";
+
+      bot.sendMessage(userId, "⏰ Your slot has expired.");
+      bot.sendMessage(ADMIN_ID, `⏰ Slot expired for user ${userId}`);
     }
-  });
-
-  bot.sendMessage(chatId, "📨 Receipt received. Waiting for admin approval.");
-});
-
-// --- ADMIN ACTIONS ---
-bot.on("callback_query", (query) => {
-  const data = query.data;
-
-  if (query.message.chat.id !== ADMIN_ID) return;
-
-  if (data.startsWith("approve_")) {
-    const userId = data.split("_")[1];
-
-    if (userState[userId]) {
-      delete userState[userId];
-    }
-
-    bot.sendMessage(userId,
-`✅ Payment Approved!
-
-Login Details:
-Username: demo_user
-Password: demo_pass
-
-⏳ Your session has started.`);
   }
+}, 60000);
 
-  if (data.startsWith("reject_")) {
-    const userId = data.split("_")[1];
-
-    if (userState[userId]) {
-      delete userState[userId];
-    }
-
-    bot.sendMessage(userId,
-`❌ Payment rejected. Please try again.`);
-  }
-});Username: demo_user
-Password: demo_pass
-
-⏳ Your session has started.`);
-});
-
-// --- ADMIN REJECT ---
-bot.onText(/\/reject (.+)/, (msg, match) => {
-  if (msg.chat.id !== ADMIN_ID) return;
-
-  const userId = match[1];
-
-  bot.sendMessage(userId,
-`❌ Payment rejected. Please try again.`);
-});
+// ================= LOG =================
+console.log("Bot started...");
