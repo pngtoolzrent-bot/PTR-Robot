@@ -22,7 +22,7 @@ app.get("/", (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Server running on port", PORT));
 
-// ================= DATA STORAGE =================
+// ================= STORAGE =================
 let bookings = {};
 let pendingLoginInput = {};
 
@@ -30,18 +30,22 @@ let pendingLoginInput = {};
 bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
 
-  bot.sendMessage(chatId, "Welcome to PNGToolzRent Bot 🚀", {
-    reply_markup: {
-      inline_keyboard: [
-        [{ text: "📊 View Slots", callback_data: "view_slots" }]
-      ]
+  bot.sendMessage(
+    chatId,
+    "👋 Welcome to PNGToolzRent\n\nSelect a tool to continue:",
+    {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "🔓 UnlockTool", callback_data: "tool_unlocktool" }]
+        ]
+      }
     }
-  });
+  );
 });
 
-// ================= SHOW SLOTS =================
+// ================= TOOL SELECTION =================
 function showSlots(chatId) {
-  bot.sendMessage(chatId, "Select an available slot:", {
+  bot.sendMessage(chatId, "📊 Select a slot:", {
     reply_markup: {
       inline_keyboard: [
         [{ text: "Slot 1", callback_data: "slot1" }],
@@ -58,25 +62,32 @@ bot.on("callback_query", (query) => {
   const userId = query.from.id;
   const data = query.data;
 
-  if (data === "view_slots") {
+  // TOOL SELECTED
+  if (data === "tool_unlocktool") {
+    bookings[userId] = { tool: "UnlockTool" };
+
+    bot.sendMessage(chatId, "✅ UnlockTool selected\n\nNow choose a slot:");
     showSlots(chatId);
   }
 
+  // SLOT SELECTED
   if (data.startsWith("slot")) {
-    bookings[userId] = {
-      slot: data,
-      status: "pending",
-      expiresAt: null
-    };
+    if (!bookings[userId]) {
+      bookings[userId] = {};
+    }
+
+    bookings[userId].slot = data;
+    bookings[userId].status = "pending";
 
     bot.sendMessage(
       chatId,
       "💳 Send your payment receipt now.\n\nAfter sending, please wait for admin approval."
     );
 
+    // Notify admin
     bot.sendMessage(
       ADMIN_ID,
-      `📥 New booking request\n\nSlot: ${data}\nUser ID: ${userId}`,
+      `📥 New Booking\n\nTool: UnlockTool\nSlot: ${data}\nUser ID: ${userId}`,
       {
         reply_markup: {
           inline_keyboard: [
@@ -90,7 +101,7 @@ bot.on("callback_query", (query) => {
     );
   }
 
-  // ================= ADMIN APPROVE =================
+  // ADMIN APPROVE
   if (data.startsWith("approve_") && userId === ADMIN_ID) {
     const targetUser = data.split("_")[1];
 
@@ -103,11 +114,11 @@ bot.on("callback_query", (query) => {
 
     bot.sendMessage(
       targetUser,
-      "✅ Your slot has been approved.\n\n⏳ Waiting for login details..."
+      "✅ Your payment is approved.\n\n⏳ Waiting for login details..."
     );
   }
 
-  // ================= ADMIN REJECT =================
+  // ADMIN REJECT
   if (data.startsWith("reject_") && userId === ADMIN_ID) {
     const targetUser = data.split("_")[1];
 
@@ -120,24 +131,23 @@ bot.on("callback_query", (query) => {
   }
 });
 
-// ================= RECEIPT + ADMIN LOGIN FLOW =================
+// ================= MESSAGE HANDLER =================
 bot.on("message", (msg) => {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
 
-  // Ignore commands
   if (msg.text && msg.text.startsWith("/")) return;
 
-  // ================= ADMIN SENDS LOGIN DETAILS =================
+  // ================= ADMIN LOGIN INPUT =================
   if (userId === ADMIN_ID && pendingLoginInput[ADMIN_ID]) {
     const targetUser = pendingLoginInput[ADMIN_ID];
 
     bot.sendMessage(
       targetUser,
-      `🔐 Your Unlock Details:\n\n${msg.text}`
+      `🔐 Your UnlockTool Details:\n\n${msg.text}`
     );
 
-    bot.sendMessage(ADMIN_ID, `✅ Login details sent to user ${targetUser}`);
+    bot.sendMessage(ADMIN_ID, `✅ Login sent to user ${targetUser}`);
 
     delete pendingLoginInput[ADMIN_ID];
     return;
@@ -148,7 +158,7 @@ bot.on("message", (msg) => {
 
   if (bookings[userId].status !== "pending") return;
 
-  const options = {
+  const adminOptions = {
     reply_markup: {
       inline_keyboard: [
         [
@@ -159,29 +169,26 @@ bot.on("message", (msg) => {
     }
   };
 
-  // ================= USER RECEIPT =================
+  // ================= RECEIPT HANDLING =================
   if (msg.photo || msg.document) {
 
-    // ✅ Acknowledge user immediately
+    // ✅ Acknowledge user
     bot.sendMessage(
       chatId,
-      "✅ Receipt received!\n\n⏳ Please be patient while we review your payment. You will be notified once approved."
+      "✅ Receipt received!\n\n⏳ Please wait while we review your payment."
     );
 
-    // Forward to admin
+    // Send to admin
+    bot.sendMessage(
+      ADMIN_ID,
+      `📥 Receipt from User ${userId}\nTool: UnlockTool\nSlot: ${bookings[userId].slot}`
+    );
+
     if (msg.photo) {
       const photo = msg.photo[msg.photo.length - 1].file_id;
-
-      bot.sendPhoto(ADMIN_ID, photo, {
-        caption: `Receipt from user ${userId}`,
-        ...options
-      });
-
+      bot.sendPhoto(ADMIN_ID, photo, adminOptions);
     } else if (msg.document) {
-      bot.sendDocument(ADMIN_ID, msg.document.file_id, {
-        caption: `Receipt from user ${userId}`,
-        ...options
-      });
+      bot.sendDocument(ADMIN_ID, msg.document.file_id, adminOptions);
     }
 
   } else {
