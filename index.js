@@ -3,7 +3,7 @@ const TelegramBot = require("node-telegram-bot-api");
 const token = process.env.BOT_TOKEN;
 const bot = new TelegramBot(token, { polling: true });
 
-// 🔐 Replace with your Telegram ID
+// 🔐 Your Admin ID
 const ADMIN_ID = 8155108761;
 
 // 📦 Slot storage
@@ -13,7 +13,7 @@ let slots = {
   slot3: { status: "available", user: null }
 };
 
-// 👤 Track user state
+// 👤 User state tracking
 let userState = {};
 
 // --- START ---
@@ -33,7 +33,7 @@ Choose an option:`, {
   });
 });
 
-// --- MAIN MESSAGE HANDLER ---
+// --- MESSAGE HANDLER ---
 bot.on("message", (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
@@ -85,7 +85,7 @@ Waiting for admin approval...`);
 `📥 New Booking Request
 
 Slot: ${slotName}
-User: ${chatId}`);
+User ID: ${chatId}`);
 
   } else {
     bot.sendMessage(chatId, "❌ Slot not available");
@@ -96,8 +96,10 @@ User: ${chatId}`);
 bot.on("photo", (msg) => {
   const chatId = msg.chat.id;
 
+  // Ignore admin
   if (chatId === ADMIN_ID) return;
 
+  // Validate user state
   if (!userState[chatId] || userState[chatId].step !== "awaiting_receipt") {
     bot.sendMessage(chatId, "⚠️ Please select a slot first.");
     return;
@@ -108,6 +110,58 @@ bot.on("photo", (msg) => {
   // Forward receipt to admin
   bot.forwardMessage(ADMIN_ID, chatId, msg.message_id);
 
+  bot.sendMessage(ADMIN_ID,
+`Approve payment for:
+Slot: ${userSlot}
+User: ${chatId}`, {
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: "✅ Approve", callback_data: `approve_${chatId}` },
+          { text: "❌ Reject", callback_data: `reject_${chatId}` }
+        ]
+      ]
+    }
+  });
+
+  bot.sendMessage(chatId, "📨 Receipt received. Waiting for admin approval.");
+});
+
+// --- ADMIN APPROVAL HANDLER ---
+bot.on("callback_query", (query) => {
+  const data = query.data;
+
+  // Only admin can approve/reject
+  if (query.message.chat.id !== ADMIN_ID) return;
+
+  if (data.startsWith("approve_")) {
+    const userId = data.split("_")[1];
+
+    if (userState[userId]) {
+      delete userState[userId];
+    }
+
+    bot.sendMessage(userId,
+`✅ Payment Approved!
+
+Login Details:
+Username: demo_user
+Password: demo_pass
+
+⏳ Your session has started.`);
+  }
+
+  if (data.startsWith("reject_")) {
+    const userId = data.split("_")[1];
+
+    if (userState[userId]) {
+      delete userState[userId];
+    }
+
+    bot.sendMessage(userId,
+`❌ Payment rejected. Please try again.`);
+  }
+});
   bot.sendMessage(ADMIN_ID, `Approve payment for ${userSlot} (User: ${chatId})`, {
     reply_markup: {
       inline_keyboard: [
