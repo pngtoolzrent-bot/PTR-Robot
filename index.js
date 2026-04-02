@@ -3,20 +3,20 @@ const TelegramBot = require("node-telegram-bot-api");
 const token = process.env.BOT_TOKEN;
 const bot = new TelegramBot(token, { polling: true });
 
-// 🔐 Your Telegram user ID (admin)
-const ADMIN_ID = 8155108761; // replace with your Telegram ID
+// 🔐 Replace with your Telegram ID
+const ADMIN_ID = 8155108761;
 
-// 📦 Simple slot system
+// 📦 Slot storage
 let slots = {
   slot1: { status: "available", user: null },
   slot2: { status: "available", user: null },
   slot3: { status: "available", user: null }
 };
 
-// 📊 Temporary user sessions
-let userSessions = {};
+// 👤 Track user state
+let userState = {};
 
-// --- START MENU ---
+// --- START ---
 bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
 
@@ -26,88 +26,136 @@ bot.onText(/\/start/, (msg) => {
 Choose an option:`, {
     reply_markup: {
       keyboard: [
-        ["📊 View Slots"],
+        ["📊 View Slots"]
       ],
       resize_keyboard: true
     }
   });
 });
 
-// --- HANDLE MESSAGES ---
+// --- MAIN MESSAGE HANDLER ---
 bot.on("message", (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
 
   if (text === "📊 View Slots") {
     bot.sendMessage(chatId,
-`📊 Slots:
+`📊 Choose a slot:
 
-1️⃣ Slot 1 - ${slots.slot1.status}
-2️⃣ Slot 2 - ${slots.slot2.status}
-3️⃣ Slot 3 - ${slots.slot3.status}
-
-Type:
-"slot1", "slot2", or "slot3" to book`);
+🟢 slot1
+🟢 slot2
+🟢 slot3`, {
+      reply_markup: {
+        keyboard: [
+          ["slot1"],
+          ["slot2"],
+          ["slot3"]
+        ],
+        resize_keyboard: true
+      }
+    });
   }
 
-  // SLOT SELECTION
   if (["slot1", "slot2", "slot3"].includes(text)) {
-    if (slots[text].status === "available") {
-
-      slots[text].status = "pending";
-      slots[text].user = chatId;
-
-      bot.sendMessage(chatId,
-`💳 Send your payment receipt now.
-
-After sending, wait for admin approval.`);
-      
-      // Notify admin
-      bot.sendMessage(ADMIN_ID,
-`📥 New booking request
-
-Slot: ${text}
-User ID: ${chatId}
-
-Please review receipt.`);
-
-    } else {
-      bot.sendMessage(chatId, "❌ Slot not available");
-    }
+    handleSlot(chatId, text);
   }
 });
 
-// --- HANDLE RECEIPTS (PHOTO OR TEXT) ---
-bot.on("photo", (msg) => handleReceipt(msg));
-bot.on("document", (msg) => handleReceipt(msg));
-bot.on("text", (msg) => {
-  if (msg.chat.id !== ADMIN_ID && msg.text && msg.text.includes("http")) {
-    handleReceipt(msg);
-  }
-});
+// --- SLOT HANDLER ---
+function handleSlot(chatId, slotName) {
+  if (slots[slotName].status === "available") {
 
-function handleReceipt(msg) {
+    slots[slotName].status = "pending";
+    slots[slotName].user = chatId;
+
+    // Track user state
+    userState[chatId] = {
+      step: "awaiting_receipt",
+      slot: slotName
+    };
+
+    bot.sendMessage(chatId,
+`💳 Slot reserved: ${slotName}
+
+📸 Please send your payment receipt as a photo in this chat.
+
+Waiting for admin approval...`);
+
+    bot.sendMessage(ADMIN_ID,
+`📥 New Booking Request
+
+Slot: ${slotName}
+User: ${chatId}`);
+
+  } else {
+    bot.sendMessage(chatId, "❌ Slot not available");
+  }
+}
+
+// --- RECEIPT HANDLER ---
+bot.on("photo", (msg) => {
   const chatId = msg.chat.id;
 
   if (chatId === ADMIN_ID) return;
 
+  if (!userState[chatId] || userState[chatId].step !== "awaiting_receipt") {
+    bot.sendMessage(chatId, "⚠️ Please select a slot first.");
+    return;
+  }
+
+  const userSlot = userState[chatId].slot;
+
   // Forward receipt to admin
   bot.forwardMessage(ADMIN_ID, chatId, msg.message_id);
 
-  bot.sendMessage(chatId, "📨 Receipt sent. Waiting for admin approval.");
-}
+  bot.sendMessage(ADMIN_ID, `Approve payment for ${userSlot} (User: ${chatId})`, {
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: "✅ Approve", callback_data: `approve_${chatId}` },
+          { text: "❌ Reject", callback_data: `reject_${chatId}` }
+        ]
+      ]
+    }
+  });
 
-// --- ADMIN APPROVAL ---
-bot.onText(/\/approve (.+)/, (msg, match) => {
-  if (msg.chat.id !== ADMIN_ID) return;
+  bot.sendMessage(chatId, "📨 Receipt received. Waiting for admin approval.");
+});
 
-  const userId = match[1];
+// --- ADMIN ACTIONS ---
+bot.on("callback_query", (query) => {
+  const data = query.data;
 
-  bot.sendMessage(userId,
-`✅ Payment approved!
+  if (query.message.chat.id !== ADMIN_ID) return;
 
-Your login details:
+  if (data.startsWith("approve_")) {
+    const userId = data.split("_")[1];
+
+    if (userState[userId]) {
+      delete userState[userId];
+    }
+
+    bot.sendMessage(userId,
+`✅ Payment Approved!
+
+Login Details:
 Username: demo_user
+Password: demo_pass
+
+⏳ Your session has started.`);
+  }
+
+  if (data.startsWith("reject_")) {
+    const userId = data.split("_")[1];
+
+    if (userState[userId]) {
+      delete userState[userId];
+    }
+
+    bot.sendMessage(userId,
+`❌ Payment rejected. Please try again.`);
+  }
+});Username: demo_user
 Password: demo_pass
 
 ⏳ Your session has started.`);
