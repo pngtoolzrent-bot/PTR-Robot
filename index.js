@@ -23,29 +23,25 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Server running on port", PORT));
 
 // ================= DATA STORAGE =================
-// In-memory (resets on restart)
-let bookings = {}; 
-// structure:
-// bookings[userId] = { slot, status, expiresAt }
+let bookings = {};
+let pendingLoginInput = {};
 
 // ================= START =================
 bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
 
-  const options = {
+  bot.sendMessage(chatId, "Welcome to PNGToolzRent Bot 🚀", {
     reply_markup: {
       inline_keyboard: [
         [{ text: "📊 View Slots", callback_data: "view_slots" }]
       ]
     }
-  };
-
-  bot.sendMessage(chatId, "Welcome to PNGToolzRent Bot 🚀\nSelect an option below:", options);
+  });
 });
 
-// ================= SLOT MENU =================
+// ================= SHOW SLOTS =================
 function showSlots(chatId) {
-  const options = {
+  bot.sendMessage(chatId, "Select an available slot:", {
     reply_markup: {
       inline_keyboard: [
         [{ text: "Slot 1", callback_data: "slot1" }],
@@ -53,13 +49,11 @@ function showSlots(chatId) {
         [{ text: "Slot 3", callback_data: "slot3" }]
       ]
     }
-  };
-
-  bot.sendMessage(chatId, "Select an available slot:", options);
+  });
 }
 
 // ================= CALLBACK HANDLER =================
-bot.on("callback_query", async (query) => {
+bot.on("callback_query", (query) => {
   const chatId = query.message.chat.id;
   const userId = query.from.id;
   const data = query.data;
@@ -69,71 +63,91 @@ bot.on("callback_query", async (query) => {
   }
 
   if (data.startsWith("slot")) {
-    const slot = data;
-
     bookings[userId] = {
-      slot: slot,
+      slot: data,
       status: "pending",
       expiresAt: null
     };
 
     bot.sendMessage(
       chatId,
-      `💳 Send your payment receipt now.\n\nAfter sending, wait for admin approval.`
+      "💳 Send your payment receipt now.\n\nAfter sending, please wait for admin approval."
     );
 
-    // Notify admin
     bot.sendMessage(
       ADMIN_ID,
-      `📥 New booking request\n\nSlot: ${slot}\nUser ID: ${userId}\n\nPlease review receipt.`
+      `📥 New booking request\n\nSlot: ${data}\nUser ID: ${userId}`,
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: "✅ Approve", callback_data: `approve_${userId}` },
+              { text: "❌ Reject", callback_data: `reject_${userId}` }
+            ]
+          ]
+        }
+      }
     );
   }
 
-  // Admin actions
+  // ================= ADMIN APPROVE =================
   if (data.startsWith("approve_") && userId === ADMIN_ID) {
     const targetUser = data.split("_")[1];
 
-    if (bookings[targetUser]) {
-      const durationHours = 6;
-      const expiresAt = Date.now() + durationHours * 60 * 60 * 1000;
+    pendingLoginInput[ADMIN_ID] = targetUser;
 
-      bookings[targetUser].status = "active";
-      bookings[targetUser].expiresAt = expiresAt;
+    bot.sendMessage(
+      ADMIN_ID,
+      `✍️ Send login details for user ${targetUser}`
+    );
 
-      bot.sendMessage(
-        targetUser,
-        `✅ Your slot is approved!\n\nAccess details:\n(You can now use the service)\n\n⏳ Duration: 6 hours`
-      );
-
-      bot.sendMessage(ADMIN_ID, `Approved user ${targetUser}`);
-    }
+    bot.sendMessage(
+      targetUser,
+      "✅ Your slot has been approved.\n\n⏳ Waiting for login details..."
+    );
   }
 
+  // ================= ADMIN REJECT =================
   if (data.startsWith("reject_") && userId === ADMIN_ID) {
     const targetUser = data.split("_")[1];
 
     if (bookings[targetUser]) {
       bookings[targetUser].status = "rejected";
-
-      bot.sendMessage(targetUser, "❌ Your booking was rejected.");
-      bot.sendMessage(ADMIN_ID, `Rejected user ${targetUser}`);
     }
+
+    bot.sendMessage(targetUser, "❌ Your booking was rejected.");
+    bot.sendMessage(ADMIN_ID, `Rejected user ${targetUser}`);
   }
 });
 
-// ================= RECEIPT HANDLER =================
-bot.on("message", async (msg) => {
+// ================= RECEIPT + ADMIN LOGIN FLOW =================
+bot.on("message", (msg) => {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
 
   // Ignore commands
   if (msg.text && msg.text.startsWith("/")) return;
 
+  // ================= ADMIN SENDS LOGIN DETAILS =================
+  if (userId === ADMIN_ID && pendingLoginInput[ADMIN_ID]) {
+    const targetUser = pendingLoginInput[ADMIN_ID];
+
+    bot.sendMessage(
+      targetUser,
+      `🔐 Your Unlock Details:\n\n${msg.text}`
+    );
+
+    bot.sendMessage(ADMIN_ID, `✅ Login details sent to user ${targetUser}`);
+
+    delete pendingLoginInput[ADMIN_ID];
+    return;
+  }
+
+  // Ignore if no booking
   if (!bookings[userId]) return;
 
   if (bookings[userId].status !== "pending") return;
 
-  // Forward receipt to admin
   const options = {
     reply_markup: {
       inline_keyboard: [
@@ -145,25 +159,37 @@ bot.on("message", async (msg) => {
     }
   };
 
-  if (msg.photo) {
-    const photo = msg.photo[msg.photo.length - 1].file_id;
+  // ================= USER RECEIPT =================
+  if (msg.photo || msg.document) {
 
-    bot.sendPhoto(ADMIN_ID, photo, {
-      caption: `Receipt from user ${userId}`,
-      ...options
-    });
-  } else if (msg.document) {
-    bot.sendDocument(ADMIN_ID, msg.document.file_id, {
-      caption: `Receipt from user ${userId}`,
-      ...options
-    });
+    // ✅ Acknowledge user immediately
+    bot.sendMessage(
+      chatId,
+      "✅ Receipt received!\n\n⏳ Please be patient while we review your payment. You will be notified once approved."
+    );
+
+    // Forward to admin
+    if (msg.photo) {
+      const photo = msg.photo[msg.photo.length - 1].file_id;
+
+      bot.sendPhoto(ADMIN_ID, photo, {
+        caption: `Receipt from user ${userId}`,
+        ...options
+      });
+
+    } else if (msg.document) {
+      bot.sendDocument(ADMIN_ID, msg.document.file_id, {
+        caption: `Receipt from user ${userId}`,
+        ...options
+      });
+    }
+
   } else {
     bot.sendMessage(chatId, "Please send a screenshot or document of your payment.");
   }
 });
 
-// ================= TIMER CHECK =================
-// Notify admin when time expires
+// ================= TIMER =================
 setInterval(() => {
   const now = Date.now();
 
